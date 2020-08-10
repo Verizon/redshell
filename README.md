@@ -20,8 +20,6 @@ chmod +x agscript.sh
 # Usage
 Start a socks listener on a beacon in your Cobalt Strike client.
 
-Edit your proxychains config with the beacon socks port.
-
 Start RedShell:
 ```
 $ python3 redshell.py 
