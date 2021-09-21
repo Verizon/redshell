@@ -230,6 +230,17 @@ RedShell> history
 
 RedShell also includes tab-completion and clearing the terminal window via ctrl + l.
 
+## CSV Log Format
+```
+Datetime,IP Address,DNS Name,NetBIOS Name,User,PID,Activity,TTPs
+2021/09/21 14:22:32 +0000,192.168.56.106,,WINDEV,USER,7312,[PROXY] cme smb 192.168.56.105,
+```
+
+Notes:
+- Required fields: Datetime, IP Address, Activity
+- Optional fields: DNS Name, NetBIOS Name, User, PID, TTPs
+- Datetime format: "%Y/%m/%d %H:%M:%S %z" (UTC)
+
 ## Maintainers
 
  - [exfiltrata](https://github.com/exfiltrata)
