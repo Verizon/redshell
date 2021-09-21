@@ -1,8 +1,8 @@
 # RedShell
-An interactive command prompt that executes commands through proxychains and automatically logs them on a Cobalt Strike team server.
+An interactive command prompt for red teaming and pentesting. Automatically pushes commands through proxychains via Cobalt Strike beacon socks proxies or custom proxies. Automatically logs activities on a Cobalt Strike teamserver and/or local files.
 
 # Installation
-RedShell runs on Python 3. It also requires a Cobalt Strike client installed on the system where it runs.
+RedShell runs on Python > 3.8.
 
 Install dependencies:
 ```
@@ -12,14 +12,12 @@ Install proxychains-ng (https://github.com/rofl0r/proxychains-ng):
 ```
 apt install proxychains4
 ```
-Make the agscript wrapper executable:
+RedShell is no longer dependent on Cobalt Strike. However, if you're using Cobalt Strike integration, the CS client must be installed on the same host as RedShell. Also Make the agscript wrapper executable:
 ```
 chmod +x agscript.sh
 ```
 
 # Usage
-Start a socks listener on a beacon in your Cobalt Strike client.
-
 Start RedShell:
 ```
 $ python3 redshell.py 
@@ -41,17 +39,88 @@ RedShell> help
 
 Documented commands (use 'help -v' for verbose/'help <topic>' for details):
 ===========================================================================
-beacon_exec  connect     help         pwd   shell        use_pivot
-cd           disconnect  history      quit  show_pivots
-config       exit        load_config  set   status 
+beacon_exec  cs_connect      cs_status     help        quit 
+cd           cs_disconnect   cs_use_pivot  history     set  
+config       cs_load_config  exec          proxy_exec  shell
+context      cs_pivots       exit          pwd         socks
+ 
 ```
 
 Set options:
 ```
 RedShell> set option VALUE
 ```
+## Logging
+RedShell automatically logs activities via the `beacon_exec`, `proxy_exec`, or `exec` commands. Logging is automatically initialized on startup, and log files are written to `~/.redshell`.
 
-## Connecting to Cobalt Strike
+To log to Cobalt Strike, connect to a team server, select a pivot, and use the `beacon_exec` command.
+
+## Proxies
+RedShell uses proxychains-ng and a custom proxychains configuration file. Configuration file modifications and command proxying are handled on-the-fly.
+
+### Cobalt Strike
+To proxy through a Cobalt Strike, connect to a team server, select a pivot, and use the `beacon_exec` command. Refer to the Cobalt Strike section for details.
+
+### Custom Proxies
+Custom socks version 4 or 5 proxies can be set with the `socks` command.
+```
+RedShell> socks -h
+usage: socks [-h] {socks4,socks5} ip_address socks_port
+
+Use a custom socks4/5 port
+
+positional arguments:
+  {socks4,socks5}
+  ip_address
+  socks_port
+
+optional arguments:
+  -h, --help       show this help message and exit
+```
+
+## Context
+RedShell's context is a key aspect of activity logging. Context allows you to set the perspective (in activity logs) of the source host executing activities in a target network. The following context attributes can included in activity logs: IP Address, DNS Name, NetBIOS Name, User Name, and Process ID. Only IP Address is required.
+
+Notes on context:
+ - Context is cleared when you set a new socks port
+ - Context is cleared when you connect/disconnect from a CS team server
+
+### Context - Custom Proxies
+After you set a socks proxy with the `socks` command, add context details with the `context` command.
+```
+RedShell> context -h
+usage: context [-h] [-d DNSNAME] [-n NETBIOSNAME] [-u USERNAME] [-p PID] ip_address
+
+Set a custom context (Source IP/DNS/NetBIOS/User/PID) for logging
+
+positional arguments:
+  ip_address            Source IP Address
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -d DNSNAME, --dnsname DNSNAME
+                        DNS Name
+  -n NETBIOSNAME, --netbiosname NETBIOSNAME
+                        NetBIOS Name
+  -u USERNAME, --username USERNAME
+                        User Name
+  -p PID, --pid PID     Process ID
+```
+
+### Context - Cobalt Strike
+If you are using a pivot on a team server, context values are automatically set based on the beacon.
+
+## Execute and Log
+The following RedShell commands are captured in activity logs:
+ - `beacon_exec` - Execute a command through beacon socks proxy and simultaneously log it to the teamserver.
+ - `proxy_exec` - Execute a command through custom socks proxy and simultaneously log it to the local file.
+ - `exec` - Execute a command and log it to the local file.
+
+## Custom Proxy Example
+![alt text](./images/custom_proxy_example.png "Custom Proxy Example")
+
+## Cobalt Strike
+### Connecting to Cobalt Strike
 
 Set Cobalt Strike connection options:
 ```
@@ -62,18 +131,13 @@ RedShell> set cs_user somedude
 
 Connect to team server (you will be prompted for the team server password):
 ```
-RedShell> connect 
-Enter Cobalt Strike password:
-Connecting...
-╔═══════════════════════╤═══════════════════════════════════════════════════════╗
-║ CS team server status │ Connected via somedude_redshell@127.0.0.1:50050       ║
-╟───────────────────────┼───────────────────────────────────────────────────────╢
-║ Socks port status     │ Disconnected                                          ║
-╚═══════════════════════╧═══════════════════════════════════════════════════════╝
-
+RedShell> cs_connect 
 ```
+Example:
 
-Or load from a config file. Note: team server passwords are not read from config files. Redshell will prompt for the teamserver password and then automatically connect.
+![alt text](./images/cs_connect.png "CS Connect")
+
+Or load from a config file. Note: team server passwords are not read from config files. RedShell will prompt for the teamserver password and then automatically connect.
 ```
 $ cat config.txt 
 cs_host=127.0.0.1
@@ -81,133 +145,49 @@ cs_port=12345
 cs_user=somedude
 ```
 ```
-RedShell> load_config config.txt
-Config applied:              
-╔════════════════════════════╤═══════════════════════════════════════════════════════╗
-║ Redshell install directory │ /opt/redshell                                         ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Proxychains config         │ /opt/redshell/proxychains_redshell.conf               ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS install directory       │ /opt/cobaltstrike                                     ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS team server             │ 127.0.0.1                                             ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS team server port        │ 50050                                                 ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS user                    │ somedude_redshell                                     ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Socks port                 │                                                       ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Beacon PID                 │                                                       ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Password                   │                                                       ║
-╚════════════════════════════╧═══════════════════════════════════════════════════════╝
-
-Enter Cobalt Strike password: 
-
-╔═══════════════════════╤═══════════════════════════════════════════════════════╗
-║ CS team server status │ Connected via somedude_redshell@127.0.0.1:50050       ║
-╟───────────────────────┼───────────────────────────────────────────────────────╢
-║ Socks port status     │ Disconnected                                          ║
-╚═══════════════════════╧═══════════════════════════════════════════════════════╝
+RedShell> cs_load_config config.txt
 ```
 
 Show available proxy pivots:
 ```
-RedShell> show_pivots 
-╔═════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
-║ ID     Alive   Socks Port    PID         User                       Computer                   Last         ║
-╠═════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║ 1      True    22200         8948        Administrator *            WS02                       16ms         ║
-╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
-║ 2      True    54212         7224        Administrator *            WS03                       39ms         ║
-╚═════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
-
+RedShell> cs_pivots 
 ```
+Example:
+
+![alt text](./images/cs_pivots.png "CS Pivots")
 
 Select a proxy pivot (note: this can only be set after a connection to the team server has been established):
 ```
-RedShell> use_pivot 2
-
-╔═══════════════════════╤════════════════════════════════════════════════════════════╗
-║ CS team server status │ Connected via somedude_redshell@127.0.0.1:50050            ║
-╟───────────────────────┼────────────────────────────────────────────────────────────╢
-║ Socks port status     │ Connected via socks port 54212 @ beacon PID 7224           ║
-╚═══════════════════════╧════════════════════════════════════════════════════════════╝
+RedShell> cs_use_pivot 2
 ```
-
-Check config
+Check Cobalt Strike status:
 ```
-RedShell> config 
-
-╔════════════════════════════╤═══════════════════════════════════════════════════════╗
-║ Redshell install directory │ /opt/redshell                                         ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Proxychains config         │ /opt/redshell/proxychains_redshell.conf               ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS install directory       │ /opt/cobaltstrike                                     ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS team server             │ 127.0.0.1                                             ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS team server port        │ 50050                                                 ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ CS user                    │ somedude_redshell                                     ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Socks port                 │                                                       ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Beacon PID                 │                                                       ║
-╟────────────────────────────┼───────────────────────────────────────────────────────╢
-║ Password                   │                                                       ║
-╚════════════════════════════╧═══════════════════════════════════════════════════════╝
+RedShell> cs_status
 ```
+Example:
 
-Check status:
-```
-RedShell> status
+![alt text](./images/cs_status.png "CS Status")
 
-╔═══════════════════════╤════════════════════════════════════════════════════════════╗
-║ CS team server status │ Connected via somedude_redshell@127.0.0.1:50050            ║
-╟───────────────────────┼────────────────────────────────────────────────────────────╢
-║ Socks port status     │ Connected via socks port 54212 @ beacon PID 7224           ║
-╚═══════════════════════╧════════════════════════════════════════════════════════════╝
-        
-```
-
-Execute commands through the beacon socks proxy. These can be run in the context of the current user or via sudo. Specifying 'proxychains' in the command is optional. Commands are forced through proxychains. MITRE ATT&CK Tactic IDs are optional. Including
+Execute commands through the beacon socks proxy. These can be run in the context of the current user or via sudo. Specifying 'proxychains' in the command is optional. Commands are forced through proxychains. MITRE ATT&CK Tactic IDs are optional. 
 ```
 RedShell> beacon_exec -h
 usage: beacon_exec [-h] [-t TTP] ...
 
-Execute a command through proxychains/beacon socks proxy and simultaneously log it to the teamserver.
+Execute a command through beacon socks proxy and simultaneously log it to the teamserver.
 
 positional arguments:
-  command            Command to execute through the proxy.
+  command            Command to execute through the proxy and log.
 
 optional arguments:
   -h, --help         show this help message and exit
   -t TTP, --ttp TTP  MITRE ATT&CK Tactic IDs. Comma delimited to specify multiple.
 
-example:
-beacon_exec -t T1003,T1075 cme smb --local-auth -u Administrator -H C713B1D611657D0687A568122193F230 --sam 192.168.1.1
+example: 
+beacon_exec -t T1550.002,T1003.002 cme smb 192.168.1.1 --local-auth -u Administrator -H C713B1D611657D0687A568122193F230 --sam
 ```
-```
-RedShell> beacon_exec cme smb 192.168.1.14
-[proxychains] config file found: /etc/proxychains.conf
-[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
-[proxychains] DLL init: proxychains-ng 4.14
-[proxychains] Strict chain  ...  127.0.0.1:48199  ...  192.168.1.14:445  ...  OK
-[proxychains] Strict chain  ...  127.0.0.1:48199  ...  192.168.1.14:135  ...  OK
-[proxychains] Strict chain  ...  127.0.0.1:48199  ...  192.168.1.14:445  ...  OK
-SMB         192.168.1.14    445    TESTNET-DC1      [*] Windows Server 2008 R2 Standard 7601 Service Pack 1 x64 (name:TESTNET-DC1) (domain:TESTNET) (signing:True) (SMBv1:True)
+Example:
 
-```
-Note on passwords used in beacon_exec commands - special characters in passwords may be interpreted as shell meta characters, which could cause commands to fail. To get around this, set the password option and then invoke with '$password'. Example:
-```
-RedShell> set password Test12345
-password - was: ''
-now: 'Test12345'
-RedShell> beacon_exec cme smb --local-auth -u administrator -p $password --shares 192.168.1.14
-```
+![alt text](./images/beacon_exec.png "Beacon Exec")
 
 Note on the Redshell and CS install directory options - the script needs to know where it lives, as well as Cobalt Strike.
 If stuff blows up, be sure to set the directories accordingly:
@@ -216,7 +196,14 @@ RedShell> set redshell_directory /opt/redshell
 RedShell> set cs_directory /opt/cobaltstrike
 ```
 
-## General Features
+## General
+Note on passwords used in *exec commands: special characters in passwords may be interpreted as shell meta characters, which could cause commands to fail. To get around this, set the password option and then invoke with '$password'. Example:
+```
+RedShell> set password Test12345
+password - was: ''
+now: 'Test12345'
+RedShell> beacon_exec cme smb 192.168.1.14 --local-auth -u administrator -p $password --shares
+```
 
 RedShell includes commands for navigating the file system:
 ```
