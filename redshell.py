@@ -462,6 +462,10 @@ class RedShell(Cmd):
                     cs_port = re.search('cs_port=(.*)', line)
                     if cs_port:
                         self.cs_port = cs_port.group(1)
+                    
+                    cs_directory = re.search('cs_directory=(.*)', line)
+                    if cs_directory:
+                        self.cs_directory = cs_directory.group(1).strip(' ')
 
                     cs_user = re.search('cs_user=(.*)', line)
                     if cs_user:

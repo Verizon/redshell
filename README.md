@@ -143,6 +143,7 @@ $ cat config.txt
 cs_host=127.0.0.1
 cs_port=12345
 cs_user=somedude
+cs_directory=/path/to/cobaltstrike/install
 ```
 ```
 RedShell> cs_load_config config.txt
