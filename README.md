@@ -51,7 +51,7 @@ Set options:
 RedShell> set option VALUE
 ```
 ## Logging
-RedShell automatically logs activities via the `beacon_exec`, `proxy_exec`, or `exec` commands. Logging is automatically initialized on startup, and log files are written to `~/.redshell`.
+RedShell automatically logs activities via the `beacon_exec`, `proxy_exec`, `exec`, or `log` commands. Logging is automatically initialized on startup, and log files are written to: `~/.redshell`.
 
 To log to Cobalt Strike, connect to a team server, select a pivot, and use the `beacon_exec` command.
 
@@ -115,6 +115,7 @@ The following RedShell commands are captured in activity logs:
  - `beacon_exec` - Execute a command through beacon socks proxy and simultaneously log it to the teamserver.
  - `proxy_exec` - Execute a command through custom socks proxy and simultaneously log it to the local file.
  - `exec` - Execute a command and log it to the local file.
+ - `log`  - Add a manual log entry to the local file.
 
 ## Custom Proxy Example
 ![alt text](./images/custom_proxy_example.png "Custom Proxy Example")

@@ -819,6 +819,31 @@ class RedShell(Cmd):
 
         # run the command
         self.do_shell(command)
+    
+    argparser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
+    argparser.description = "Add a manual log entry to the local file."
+    argparser.epilog = textwrap.dedent('''
+
+           example: 
+           log -t T1608.001 Uploaded malware to LOTS site
+    ''')
+
+    argparser.add_argument('-t', '--ttp', type=str, help="MITRE ATT&CK Tactic IDs. Comma delimited to specify multiple.")
+    argparser.add_argument('log_entry', nargs=argparse.REMAINDER, help="Entry to log.")
+    @with_argparser(argparser)
+    def do_log(self, args):
+
+        # make a copy of the user-specified log entry
+        log_list = args.log_entry
+
+        # convert command list into a string
+        log_entry = ' '.join(log_list)
+
+        ttps = ''
+        if args.ttp:
+            ttps = self.validate_ttps(args.ttp)
+
+        Logger(log_entry, ip=self.context_ip, dns_name=self.context_dns_name, netbios_name=self.context_netbios_name, user_name=self.context_user_name, pid=self.context_pid, ttps=ttps.replace(' ', ''))
 
 
 if __name__ == '__main__':
