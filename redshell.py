@@ -6,21 +6,28 @@
 import argparse
 import csv
 import fileinput
+import functools
 import getpass
 import os
 import re
 import shlex
 import shutil
+import socket
+import struct
 import sys
 import textwrap
 from datetime import datetime, timezone
 
 import pexpect
-from cmd2 import Cmd, Settable, with_argparser
+from cmd2 import Cmd, Settable, ansi, with_argparser
 from rich import box
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
+
+# define colors
+green = functools.partial(ansi.style, fg=ansi.RgbFg(65, 255, 0))
+red = functools.partial(ansi.style, fg=ansi.RgbFg(239, 41, 41))
 
 
 def xstr(s):
@@ -52,7 +59,7 @@ class Logger():
     def open_logfile(cls, basefilename):
 
         logfile_csv = f"{basefilename}.csv"
-        print("Logging to: ", logfile_csv)
+        print(f"Logging to: {logfile_csv}\n")
         cls.logfile_csv = open(logfile_csv, 'w', newline='')
 
         fieldnames = ['Datetime', 'IP Address', 'DNS Name', 'NetBIOS Name', 'User', 'PID', 'Activity', 'TTPs']
@@ -86,54 +93,46 @@ class Logger():
 class CSProxyPivots():
 
     instances = {}
+    by_hash = {}
     count = 0
 
-    def __init__(self, bid, pid, port, user, computer, ip, alive, last):
+    def __init__(self, socks_type, socks_port, bid, beacon_pid, beacon_user, beacon_computer, beacon_ip, beacon_alive, beacon_last, socks5_auth=None):
+        self.socks_type = socks_type
+        self.socks_port = socks_port
+        self.socks5_auth = socks5_auth
+        self.socks5_user = None
+        self.socks5_pass = None
         self.bid = bid
-        self.pid = pid
-        self.port = port
-        self.user = user
-        self.computer = computer
-        self.ip = ip
-        self.alive = alive
-        self.last = last
+        self.beacon_pid = beacon_pid
+        self.beacon_user = beacon_user
+        self.beacon_computer = beacon_computer
+        self.beacon_ip = beacon_ip
+        self.beacon_alive = beacon_alive
+        self.beacon_last = beacon_last
+        self.beacon_hash = hash(f"{bid}-{beacon_pid}-{socks_port}")
 
         CSProxyPivots.count += 1
 
         self.id = CSProxyPivots.count
-        CSProxyPivots.instances[CSProxyPivots.count] = self
+        CSProxyPivots.instances[self.id] = self
+        CSProxyPivots.by_hash[self.beacon_hash] = self
 
     @classmethod
     def get_pivots(cls):
 
         data = []
 
-        data.append(['ID', 'Alive', 'Socks Port', 'PID', 'User', 'Computer', 'Last'])
+        data.append(['ID', 'Alive', 'Socks Type', 'Socks Port', 'Socks5 Auth', 'Beacon PID', 'Beacon User', 'Beacon Computer', 'Beacon Last'])
 
         for pivot in CSProxyPivots.instances.values():
-            data.append([str(pivot.id), str(pivot.alive), pivot.port, pivot.pid, pivot.user, pivot.computer, pivot.last])
+            data.append([str(pivot.id), str(pivot.beacon_alive), pivot.socks_type, pivot.socks_port, pivot.socks5_auth, pivot.beacon_pid, pivot.beacon_user, pivot.beacon_computer, pivot.beacon_last])
 
         return data
-
-    @classmethod
-    def reset(cls):
-
-        CSProxyPivots.instances.clear()
-        CSProxyPivots.count = 0
 
 
 class RedShell(Cmd):
 
-    intro = """
-                ____           _______ __         ____
-               / __ \___  ____/ / ___// /_  ___  / / /
-              / /_/ / _ \/ __  /\__ \/ __ \/ _ \/ / / 
-             / _, _/  __/ /_/ /___/ / / / /  __/ / /  
-            /_/ |_|\___/\__,_//____/_/ /_/\___/_/_/
-
-            """
-
-    prompt = 'RedShell> '
+    prompt = 'redshell > '
 
     def __init__(self):
         super().__init__()
@@ -156,6 +155,8 @@ class RedShell(Cmd):
                 self.remove_settable(key)
             except:
                 pass
+
+        self.display_intro()
 
         # check/create redshell user dir
         home_dir = os.path.expanduser("~")
@@ -190,8 +191,13 @@ class RedShell(Cmd):
         self.context_pid = ''
         self.socks_host = ''
         self.socks_port = ''
+        self.socks_type = ''
+        self.socks5_auth = ''
+        self.socks5_user = ''
+        self.socks5_pass = ''
         self.socks_port_connected = False
         self.password = ''
+        self.check_socks = True
 
         # initialze user settable options
         self.add_settable(Settable('redshell_directory', str, 'redshell install directory', self, completer=Cmd.path_complete, onchange_cb=self._onchange_redshell_directory))
@@ -201,12 +207,51 @@ class RedShell(Cmd):
         self.add_settable(Settable('cs_port', str, 'Cobalt Strike team server port', self))
         self.add_settable(Settable('cs_user', str, 'Cobalt Strike user', self, onchange_cb=self._onchange_cs_user))
         self.add_settable(Settable('password', str, 'Password for beacon_exec commands. Invoke with $password.', self))
+        self.add_settable(Settable('check_socks', bool, 'Validate connections/authentication to SOCKS servers', self))
            
         # start logger
         now = datetime.now()
         timestamp = now.strftime("%Y_%m_%d_%H_%M_%S")
         basefilename = f"{self.redshell_user_directory}redshell_{timestamp}"
         Logger.open_logfile(basefilename)
+
+    def _set_prompt(self):
+
+        if self.socks_port_connected == True:
+            color = green
+        else:
+            color = red
+        
+        # set prompt with context vars
+        if self.context_user_name and self.context_netbios_name:
+            self.prompt = f"redshell ({color(f'{self.context_user_name}@{self.context_netbios_name}')}) > "
+
+        elif self.context_user_name and self.context_dns_name:
+            self.prompt = f"redshell ({color(f'{self.context_user_name}@{self.context_dns_name}')}) > "
+
+        elif self.context_dns_name:
+            self.prompt = f"redshell ({color(f'@{self.context_dns_name}')}) > "
+
+        elif self.context_ip:
+            self.prompt = f"redshell ({color(f'@{self.context_ip}')}) > "
+
+    def postcmd(self, stop, line):
+
+        self._set_prompt()
+        return stop
+
+
+    def display_intro(self):
+
+        intro = """
+                ____           _______ __         ____
+               / __ \___  ____/ / ___// /_  ___  / / /
+              / /_/ / _ \/ __  /\__ \/ __ \/ _ \/ / / 
+             / _, _/  __/ /_/ /___/ / / / /  __/ / /  
+            /_/ |_|\___/\__,_//____/_/ /_/\___/_/_/
+
+            """
+        self.poutput(green(intro))
 
 
     def _onchange_redshell_directory(self, param_name, old, new):
@@ -247,11 +292,17 @@ class RedShell(Cmd):
         console = Console()
         console.print(table)
 
-    def update_proxychains_conf(self, socks_type, ip, socks_port):
+    def update_proxychains_conf(self, socks_type, ip, socks_port, socks5_auth=None, socks5_user=None, socks5_pass=None):
 
         for line in fileinput.input(self.proxychains_config, inplace=True): 
-            if line.startswith('socks'): 
-                print(f"{socks_type} {ip} {socks_port}", end="\n") 
+            if line.startswith('socks'):
+
+                if socks_type == 'socks5' and socks5_auth:
+                    print(f"{socks_type} {ip} {socks_port} {socks5_user} {socks5_pass}", end="\n")
+
+                else:
+                    print(f"{socks_type} {ip} {socks_port}", end="\n")
+
             else: 
                 print(line, end = '')
 
@@ -271,7 +322,12 @@ class RedShell(Cmd):
 
         # clear socks port if user is applying a new one
         if clear_socks:
+            self.socks_host = ''
             self.socks_port = ''
+            self.socks_type = ''
+            self.socks5_auth = ''
+            self.socks5_user = ''
+            self.socks5_pass = ''
             self.socks_port_connected = False
 
         # if connected to cs team server, kill connection
@@ -318,17 +374,54 @@ class RedShell(Cmd):
     argparser.add_argument(type=str, dest="socks_type", choices=['socks4', 'socks5'])
     argparser.add_argument(type=str, dest="ip_address")
     argparser.add_argument(type=str, dest="socks_port")
+    argparser.add_argument('-u', type=str, dest="socks5_user")
+    argparser.add_argument('-p', type=str, dest="socks5_pass")
     @with_argparser(argparser)
     def do_socks(self, args):
-        """Use a custom socks4/5 port"""
-
+        """Use a custom socks4/5 server"""
+  
         # clear any existing context, socks port, and cobalt strike connections
         self.clear_context(clear_socks=True, clear_cs=True)
         
+        self.socks_type = args.socks_type
         self.socks_host = args.ip_address
         self.socks_port = args.socks_port
         self.socks_port_connected = True
-        self.update_proxychains_conf(args.socks_type, args.ip_address, args.socks_port)
+
+        if args.socks_type == 'socks5':
+
+            if (args.socks5_user and not args.socks5_pass) or (args.socks5_pass and not args.socks5_user):
+
+                if args.socks_user:
+                    self.perror("ERROR: SOCKS5 user set but missing password!")
+                else:
+                    self.perror("ERROR: SOCKS5 password set but missing user!")
+                return
+            
+            elif args.socks5_user and args.socks5_pass:
+                self.socks5_auth = 'UserAndPwd'
+                self.socks5_user = args.socks5_user
+                self.socks5_pass = args.socks5_pass
+
+            else:
+                self.socks5_auth = ''
+                self.socks5_user = ''
+                self.socks5_pass = ''
+
+        if self.check_socks:
+
+            if self.validate_socks(self.socks_type, self.socks_host, self.socks_port, self.socks5_auth, self.socks5_user, self.socks5_pass):
+                
+                self.update_proxychains_conf(self.socks_type, self.socks_host, self.socks_port, self.socks5_auth, self.socks5_user, self.socks5_pass)
+                self.socks_port_connected = True
+
+            else:
+                self.clear_context(clear_socks=True)
+                return
+        
+        else:
+            self.update_proxychains_conf(self.socks_type, self.cs_host, self.socks_port, self.socks5_auth, self.socks5_user, self.socks5_pass)
+            self.socks_port_connected = True
         
         self.poutput("Socks port updated.")
         self.pwarning("WARNING: Be sure to update your context accordingly with the 'context' command.")
@@ -385,16 +478,16 @@ class RedShell(Cmd):
         """Display CS team server and beacon socks port connection status"""
 
         if self.cs_process and self.cs_process.isalive():
-            cs_server_status = f"[green]Connected via {self.cs_user}@{self.cs_host}:{self.cs_port}[/]"
+            cs_server_status = f"[#41FF00]Connected via {self.cs_user}@{self.cs_host}:{self.cs_port}[/]"
 
         else:
-            cs_server_status = "[red]Disconnected[/]"
+            cs_server_status = "[#EF2929]Disconnected[/]"
 
         if self.cs_process and self.cs_process.isalive() and self.socks_port_connected:
-            socks_port_status = f"[green]Connected via socks port {self.socks_port} @ beacon PID {self.cs_beacon_pid}[/]"
+            socks_port_status = f"[#41FF00]Connected via {self.socks_type} port {self.socks_port} @ beacon PID {self.cs_beacon_pid}[/]"
 
         else:
-            socks_port_status = "[red]Disconnected[/]"
+            socks_port_status = "[#EF2929]Disconnected[/]"
 
         data = [
             ["[i]CS Team Server Status[/]", cs_server_status],
@@ -403,7 +496,9 @@ class RedShell(Cmd):
 
         self.print_table(data)
 
-
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('-s', action='store_true', dest='show_secrets', help="Show secrets")
+    @with_argparser(argparser)
     def do_config(self, args):
         """Display current config"""
 
@@ -420,9 +515,14 @@ class RedShell(Cmd):
             data.append(["[i]CS User[/]", self.cs_user])
 
         if self.socks_port:
-            data.append(["[i]Socks Host/Port", f"{self.socks_host}:{self.socks_port}"])
+            data.append(["[i]Socks Connection", f"{self.socks_type}://{self.socks_host}:{self.socks_port}"])
+
+            if self.socks5_auth:
+                data.append(["[i]Socks5 User", self.socks5_user])
+                data.append(["[i]Socks5 Password", self.socks5_pass if args.show_secrets else '*' * len(self.socks5_pass)])
+
         else:
-            data.append(["[i]Socks Host/Port", ''])
+            data.append(["[i]Socks Connection", ''])
 
         context = ''
         if self.context_ip:
@@ -439,7 +539,7 @@ class RedShell(Cmd):
         data.append(["[i]Context[/]", context])
 
         if self.password:
-            data.append(["[i]Password[/]", self.password])
+            data.append(["[i]Password[/]", self.password if args.show_secrets else '*' * len(self.password)])
 
         self.print_table(data)
 
@@ -486,92 +586,128 @@ class RedShell(Cmd):
         # check for active connection to the team server
         if not self.cs_process or not self.cs_process.isalive():
             self.perror("Error: not connected to CS team server. Connect first and then select a pivot.")
-            self.socks_port = ''
-            self.cs_beacon_pid = ''
-            self.socks_port_connected = False
+            self.clear_context(clear_socks=True)
             return
 
-        else:
-            # clear known pivots each time we run this method
-            CSProxyPivots.reset()
+        # ask agscript for pivots
+        self.cs_process.sendline('x pivots()')
+        self.cs_process.expect('.*aggressor.*> ')
 
-            # ask agscript for pivots
-            self.cs_process.sendline('x pivots()')
-            self.cs_process.expect('.*aggressor.*> ')
+        if self.cs_process.after:
 
-            if self.cs_process.after:
+            # copy instance containers and clear them to reset
+            pivot_instances = CSProxyPivots.instances.copy()
+            pivot_instances_by_hash = CSProxyPivots.by_hash.copy()
+            CSProxyPivots.instances.clear()
+            CSProxyPivots.by_hash.clear()
+            CSProxyPivots.count = 0
 
-                # parse through results, only looking for socks proxy pivots
-                for result in re.findall('%\(.*?SOCKS4a Proxy.*?\)', self.cs_process.after.decode()):
+            # parse through results
+            for result in re.findall('%\([^()]*\)', self.cs_process.after.decode()):
 
-                    pivot_port = None
-                    pivot_bid = None
-                    pivot_pid = None
-                    pivot_user = ''
-                    pivot_computer = None
-                    pivot_alive = None
-                    pivot_last = None
+                pivot_socks_type = None
+                pivot_socks_port = None
+                pivot_socks5_auth = None
+                pivot_bid = None
+                pivot_pid = None
+                pivot_user = None
+                pivot_computer = None
+                pivot_alive = None
+                pivot_last = None
 
-                    # get socks port
-                    result_port = re.search("port => '([0-9]+)'", result)
-                    if result_port:
-                        pivot_port = result_port.group(1)
+                # get socks type
+                result_socks_type = re.search("type => '(SOCKS[5|4a]).*?'", result)
+                if result_socks_type:
+                    pivot_socks_type = result_socks_type.group(1).lower()
 
-                    # get beacon ID
-                    result_bid = re.search("bid => '([0-9]+)'", result)
-                    if result_bid:
-                        pivot_bid = result_bid.group(1)
+                # get socks5 auth
+                result_socks_info = re.search("socks_info => '(.*?)'", result)
+                if result_socks_info:
+                    socks_info = result_socks_info.group(1).lower()
+                    if 'userandpwd' in socks_info and not 'noauth' in socks_info:
+                        pivot_socks5_auth = 'userandpwd'
 
-                    if pivot_bid:
+                # get socks port
+                result_port = re.search("port => '([0-9]+)'", result)
+                if result_port:
+                    pivot_socks_port = result_port.group(1)
 
-                        # get full beacon info for beacon ID
-                        self.cs_process.sendline(f"x beacon_info({pivot_bid})")
-                        self.cs_process.expect('.*aggressor.*> ')
+                # get beacon ID
+                result_bid = re.search("bid => '([0-9]+)'", result)
+                if result_bid:
+                    pivot_bid = result_bid.group(1)
 
-                        if self.cs_process.after:
+                if pivot_bid:
 
-                            beacon_info = self.cs_process.after.decode()
+                    # get full beacon info for beacon ID
+                    self.cs_process.sendline(f"x beacon_info({pivot_bid})")
+                    self.cs_process.expect('.*aggressor.*> ')
 
-                            # check if beacon is alive or dead
-                            result_alive = re.search("alive => 'true'", beacon_info)
-                            if result_alive:
-                                pivot_alive = True
+                    if self.cs_process.after:
 
-                            # get beacon user
-                            result_user = re.search("user => '(.*?)'", beacon_info)
-                            if result_user:
-                                pivot_user = result_user.group(1)
+                        beacon_info = self.cs_process.after.decode()
 
-                            # get beacon computer
-                            result_computer = re.search("computer => '(.*?)'", beacon_info)
-                            if result_computer:
-                                pivot_computer = result_computer.group(1)
+                        # check if beacon is alive or dead
+                        result_alive = re.search("alive => 'true'", beacon_info)
+                        if result_alive:
+                            pivot_alive = True
 
-                            # get beacon ip
-                            result_ip = re.search("internal => '(.*?)'", beacon_info)
-                            if result_ip:
-                                pivot_ip = result_ip.group(1)
+                        # get beacon user
+                        result_user = re.search("user => '(.*?)'", beacon_info)
+                        if result_user:
+                            pivot_user = result_user.group(1)
 
-                            # get beacon pid
-                            result_pid = re.search("pid => '([0-9]+)'", beacon_info)
-                            if result_pid:
-                                pivot_pid = result_pid.group(1)
+                        # get beacon computer
+                        result_computer = re.search("computer => '(.*?)'", beacon_info)
+                        if result_computer:
+                            pivot_computer = result_computer.group(1)
 
-                            result_last = re.search("lastf => '(.*?)'", beacon_info)
-                            if result_last:
-                                pivot_last = result_last.group(1)
+                        # get beacon ip
+                        result_ip = re.search("internal => '(.*?)'", beacon_info)
+                        if result_ip:
+                            pivot_ip = result_ip.group(1)
 
-                    # intialize ProxyPivot instance if we have all the necessary details
-                    if pivot_bid and pivot_port and pivot_pid and pivot_computer:
-                        CSProxyPivots(bid=pivot_bid, port=pivot_port, pid=pivot_pid, user=pivot_user, computer=pivot_computer, ip=pivot_ip, alive=pivot_alive, last=pivot_last)
+                        # get beacon pid
+                        result_pid = re.search("pid => '([0-9]+)'", beacon_info)
+                        if result_pid:
+                            pivot_pid = result_pid.group(1)
 
-                # display ProxyPivot table
-                if CSProxyPivots.instances.items():
+                        # get beacon last
+                        result_last = re.search("lastf => '(.*?)'", beacon_info)
+                        if result_last:
+                            pivot_last = result_last.group(1)
 
-                    self.print_table(CSProxyPivots.get_pivots(), header=True)
+                # intialize ProxyPivot instance if we have all the necessary details
+                if pivot_socks_type and pivot_socks_port and pivot_bid and pivot_pid and pivot_user and pivot_computer and pivot_alive and pivot_last:
 
-                else:
-                    self.pwarning("No proxy pivots found!")
+                    # look for existing pivot instance
+                    pivot_hash = hash(f"{pivot_bid}-{pivot_pid}-{pivot_socks_port}")
+                    cs_pivot = pivot_instances_by_hash.get(pivot_hash)
+
+                    # if we have an existing pivot, just update alive and last values
+                    if cs_pivot:
+                        cs_pivot.beacon_alive = pivot_alive
+                        cs_pivot.beacon_last = pivot_last
+
+                        CSProxyPivots.count += 1
+
+                        cs_pivot.id = CSProxyPivots.count
+
+                        # add existing instance back into class containers
+                        CSProxyPivots.instances[cs_pivot.id] = cs_pivot
+                        CSProxyPivots.by_hash[pivot_hash] = cs_pivot
+
+                    # none found, make a new instance
+                    else:
+                        CSProxyPivots(pivot_socks_type, pivot_socks_port, pivot_bid, pivot_pid, pivot_user, pivot_computer, pivot_ip, pivot_alive, pivot_last, pivot_socks5_auth)
+
+            # display ProxyPivot table
+            if CSProxyPivots.instances.items():
+
+                self.print_table(CSProxyPivots.get_pivots(), header=True)
+
+            else:
+                self.pwarning("No proxy pivots found!")
 
 
     def do_cs_use_pivot(self, arg_pivot_id):
@@ -579,11 +715,20 @@ class RedShell(Cmd):
 
         self.clear_context(clear_socks=True)
 
+        # check for active connection to the team server
+        if not self.cs_process or not self.cs_process.isalive():
+            self.perror("Error: not connected to CS team server. Connect first and then select a pivot.")
+            return
+
+        if not CSProxyPivots.instances:
+            self.perror("No pivots found! Run 'cs_pivots' to query them on the team server")
+            return
+
         # convert arg to int
         try:
             pivot_id = int(arg_pivot_id)
         except ValueError:
-            self.perror('Invalid pivot ID!')
+            self.perror('Invalid pivot ID, must be int!')
             return
 
         # get pivot instance by specified ID
@@ -591,23 +736,55 @@ class RedShell(Cmd):
 
         if proxy_pivot:
             
-            if proxy_pivot.alive:
+            if proxy_pivot.beacon_alive:
 
                 # set config vars from selected ProxyPiot instance
                 self.cs_beacon_id = proxy_pivot.bid
-                self.cs_beacon_pid = proxy_pivot.pid
-                self.cs_beacon_user = proxy_pivot.user
-                self.cs_beacon_computer = proxy_pivot.computer
-                self.cs_beacon_ip = proxy_pivot.ip
-                self.context_ip = self.cs_beacon_ip
-                self.context_netbios_name = self.cs_beacon_computer
-                self.context_user_name = self.cs_beacon_user
-                self.context_pid = self.cs_beacon_pid
+                self.cs_beacon_pid = proxy_pivot.beacon_pid
+                self.cs_beacon_user = proxy_pivot.beacon_user.replace(' *', '')
+                self.cs_beacon_computer = proxy_pivot.beacon_computer
+                self.cs_beacon_ip = proxy_pivot.beacon_ip
+                self.context_pid = proxy_pivot.beacon_pid
+                self.context_user_name = proxy_pivot.beacon_user.replace(' *', '')
+                self.context_netbios_name = proxy_pivot.beacon_computer
+                self.context_ip = proxy_pivot.beacon_ip                
                 self.socks_host = self.cs_host
-                self.socks_port = proxy_pivot.port
-                self.socks_port_connected = True
-                self.update_proxychains_conf('socks4', self.cs_host, self.socks_port)
+                self.socks_port = proxy_pivot.socks_port
+                self.socks_type = proxy_pivot.socks_type
+                self.socks5_auth = proxy_pivot.socks5_auth
+            
+                # collect socks5 creds
+                if self.socks_type == 'socks5' and self.socks5_auth:
 
+                    if not proxy_pivot.socks5_user and not proxy_pivot.socks5_pass:
+
+                        self.poutput("SOCKS5 pivot requires authentication.\n")
+
+                        proxy_pivot.socks5_user = self.read_input("Enter SOCKS5 user: ")
+                        self.socks5_user = proxy_pivot.socks5_user
+                        
+                        proxy_pivot.socks5_pass = getpass.getpass("Enter SOCKS5 password: ")
+                        self.socks5_pass = proxy_pivot.socks5_pass
+
+                    else:
+                        self.socks5_user = proxy_pivot.socks5_user
+                        self.socks5_pass = proxy_pivot.socks5_pass
+
+                if self.check_socks:
+
+                    if self.validate_socks(self.socks_type, self.socks_host, self.socks_port, self.socks5_auth, self.socks5_user, self.socks5_pass, proxy_pivot):
+                        
+                        self.update_proxychains_conf(self.socks_type, self.cs_host, self.socks_port, self.socks5_auth, self.socks5_user, self.socks5_pass)
+                        self.socks_port_connected = True
+
+                    else:
+                        self.clear_context(clear_socks=True)
+                        return
+                
+                else:
+                    self.update_proxychains_conf(self.socks_type, self.cs_host, self.socks_port, self.socks5_auth, self.socks5_user, self.socks5_pass)
+                    self.socks_port_connected = True
+                        
                 self.do_cs_status('')
                 return
 
@@ -618,6 +795,90 @@ class RedShell(Cmd):
         else:
             self.perror('Invalid pivot ID!')
             return
+
+    def validate_socks(self, socks_type, ip, port, socks5_auth=None, socks5_user=None, socks5_pass=None, cs_proxy_pivot=None):
+        """checks connectivity and authentication to SOCKS servers"""
+
+        # initialize socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # connect to the IP and port
+        try:
+            s.connect((ip, int(port)))
+        except ConnectionRefusedError:
+            self.perror("Error connecting to SOCKS proxy: Connection refused!")
+
+        # if it's socks4 then we're all done
+        if socks_type == 'socks4':
+            s.close()
+            return True
+        
+        # test socks5 with no auth
+        elif socks_type == 'socks5' and not socks5_auth:
+
+            # 0x05 = SOCKS5, 0x01 = client supports one auth type, 0x00 = no auth
+            handshake = struct.pack('BBB', 0x05, 0x01, 0x00)
+            s.sendall(handshake)
+
+            try:
+                data = s.recv(2)
+                version, auth = struct.unpack('BB', data)
+            except:
+                self.perror("Error connecting to SOCKS proxy!")
+                s.close()
+                return False
+
+            if version == 5 and auth == 0:
+                s.close()
+                return True
+
+        # test socks5 with user/pass auth
+        elif socks_type == 'socks5' and socks5_auth:
+
+            # 0x05 = SOCKS5, 0x01 = client supports one auth type, 0x01 = user/pass auth
+            handshake = struct.pack('BBB', 0x05, 0x01, 0x02)
+            s.sendall(handshake)
+
+            try:
+                data = s.recv(2)
+                version, auth = struct.unpack('BB', data)
+            except:
+                self.perror("Error connecting to SOCKS proxy!")
+                s.close()
+                return False
+
+            if version == 5 and auth == 2:
+        
+                auth = b"\x01" + struct.pack("B", len(socks5_user)) + socks5_user.encode() + struct.pack("B", len(socks5_pass)) + socks5_pass.encode()
+                s.sendall(auth)
+        
+                try:
+                    data = s.recv(2)
+                    version, status = struct.unpack('BB', data)
+                except:
+                    self.perror("Error connecting to SOCKS5 proxy!")
+                    s.close()
+                    return False
+
+                if status == 0:
+                    s.close()
+                    return True
+                
+                else:
+                    self.perror("Error authenticating to SOCKS5 proxy!")
+                    s.close()
+
+                    # reset creds on the pivot instance since auth failed
+                    if cs_proxy_pivot:
+                        cs_proxy_pivot.socks5_user = None
+                        cs_proxy_pivot.socks5_pass = None
+
+                    return False
+
+            else:
+                self.perror("Error connecting to SOCKS5 proxy!")
+                s.close()
+                return False
 
     def do_cd(self, args):
         """Change directory"""

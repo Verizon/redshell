@@ -1,5 +1,7 @@
 # RedShell
-An interactive command prompt for red teaming and pentesting. Automatically pushes commands through proxychains via Cobalt Strike beacon socks proxies or custom proxies. Automatically logs activities on a Cobalt Strike teamserver and/or local files.
+An interactive command prompt for red teaming and pentesting. Automatically pushes commands through SOCKS4/5 proxies via proxychains. Optional Cobalt Strike integration pulls beacon SOCKS4/5 proxies from the team server. Automatically logs activities to a local CSV file and a Cobalt Strike team server (if configured).
+
+Note that because RedShell uses proxychains under the hood, only TCP traffic is proxied.
 
 # Installation
 RedShell runs on Python > 3.8.
@@ -12,7 +14,7 @@ Install proxychains-ng (https://github.com/rofl0r/proxychains-ng):
 ```
 apt install proxychains4
 ```
-RedShell is no longer dependent on Cobalt Strike. However, if you're using Cobalt Strike integration, the CS client must be installed on the same host as RedShell. Also Make the agscript wrapper executable:
+RedShell is no longer dependent on Cobalt Strike. However, if you're using Cobalt Strike integration, the CS client must be installed on the same host as RedShell. Also make the agscript wrapper executable:
 ```
 chmod +x agscript.sh
 ```
@@ -20,7 +22,7 @@ chmod +x agscript.sh
 # Usage
 Start RedShell:
 ```
-$ python3 redshell.py 
+$python3 redshell.py 
 
                 ____           _______ __         ____
                / __ \___  ____/ / ___// /_  ___  / / /
@@ -29,27 +31,30 @@ $ python3 redshell.py
             /_/ |_|\___/\__,_//____/_/ /_/\___/_/_/
 
             
-RedShell> 
+Logging to: /home/user/.redshell/redshell_2022_08_22_13_00_13.csv
+
+redshell > 
 
 ```
 
 Display help:
 ```
-RedShell> help
+redshell > help
 
 Documented commands (use 'help -v' for verbose/'help <topic>' for details):
 ===========================================================================
-beacon_exec  cs_connect      cs_status     help        quit 
-cd           cs_disconnect   cs_use_pivot  history     set  
-config       cs_load_config  exec          proxy_exec  shell
-context      cs_pivots       exit          pwd         socks
+beacon_exec  cs_connect      cs_status     help        pwd    socks
+cd           cs_disconnect   cs_use_pivot  history     quit 
+config       cs_load_config  exec          log         set  
+context      cs_pivots       exit          proxy_exec  shell
  
 ```
 
 Set options:
 ```
-RedShell> set option VALUE
+redshell> set option VALUE
 ```
+
 ## Logging
 RedShell automatically logs activities via the `beacon_exec`, `proxy_exec`, `exec`, or `log` commands. Logging is automatically initialized on startup, and log files are written to: `~/.redshell`.
 
@@ -64,19 +69,24 @@ To proxy through a Cobalt Strike, connect to a team server, select a pivot, and 
 ### Custom Proxies
 Custom socks version 4 or 5 proxies can be set with the `socks` command.
 ```
-RedShell> socks -h
-usage: socks [-h] {socks4,socks5} ip_address socks_port
+redshell > socks -h
+usage: socks [-h] [-u SOCKS5_USER] [-p SOCKS5_PASS] {socks4,socks5} ip_address socks_port
 
-Use a custom socks4/5 port
+Use a custom socks4/5 server
 
 positional arguments:
   {socks4,socks5}
   ip_address
   socks_port
 
-optional arguments:
+options:
   -h, --help       show this help message and exit
+  -u SOCKS5_USER
+  -p SOCKS5_PASS
 ```
+
+## SOCKS Proxy Verification
+RedShell automatically verifies connections and authentication (where applicable) to SOCKS proxies upon selection (either using the `socks` or `cs_use_pivot` commands). This can be disabled with the following command: `set check_socks false`
 
 ## Context
 RedShell's context is a key aspect of activity logging. Context allows you to set the perspective (in activity logs) of the source host executing activities in a target network. The following context attributes can included in activity logs: IP Address, DNS Name, NetBIOS Name, User Name, and Process ID. Only IP Address is required.
@@ -110,6 +120,9 @@ optional arguments:
 ### Context - Cobalt Strike
 If you are using a pivot on a team server, context values are automatically set based on the beacon.
 
+### Command Prompt
+The command prompt is automatically updated with context variables (user@host).
+
 ## Execute and Log
 The following RedShell commands are captured in activity logs:
  - `beacon_exec` - Execute a command through beacon socks proxy and simultaneously log it to the teamserver.
@@ -125,14 +138,14 @@ The following RedShell commands are captured in activity logs:
 
 Set Cobalt Strike connection options:
 ```
-RedShell> set cs_host 127.0.0.1
-RedShell> set cs_port 50050
-RedShell> set cs_user somedude
+redshell > set cs_host 127.0.0.1
+redshell > set cs_port 50050
+redshell > set cs_user somedude
 ```
 
 Connect to team server (you will be prompted for the team server password):
 ```
-RedShell> cs_connect 
+redshell > cs_connect 
 ```
 Example:
 
@@ -147,12 +160,12 @@ cs_user=somedude
 cs_directory=/path/to/cobaltstrike/install
 ```
 ```
-RedShell> cs_load_config config.txt
+redshell > cs_load_config config.txt
 ```
 
 Show available proxy pivots:
 ```
-RedShell> cs_pivots 
+redshell > cs_pivots 
 ```
 Example:
 
@@ -160,11 +173,15 @@ Example:
 
 Select a proxy pivot (note: this can only be set after a connection to the team server has been established):
 ```
-RedShell> cs_use_pivot 2
+redshell > cs_use_pivot 2
+SOCKS5 pivot requires authentication.
+
+Enter SOCKS5 user: username
+Enter SOCKS5 password:
 ```
 Check Cobalt Strike status:
 ```
-RedShell> cs_status
+redshell > cs_status
 ```
 Example:
 
@@ -172,7 +189,7 @@ Example:
 
 Execute commands through the beacon socks proxy. These can be run in the context of the current user or via sudo. Specifying 'proxychains' in the command is optional. Commands are forced through proxychains. MITRE ATT&CK Tactic IDs are optional. 
 ```
-RedShell> beacon_exec -h
+redshell > beacon_exec -h
 usage: beacon_exec [-h] [-t TTP] ...
 
 Execute a command through beacon socks proxy and simultaneously log it to the teamserver.
@@ -194,37 +211,37 @@ Example:
 Note on the Redshell and CS install directory options - the script needs to know where it lives, as well as Cobalt Strike.
 If stuff blows up, be sure to set the directories accordingly:
 ```
-RedShell> set redshell_directory /opt/redshell
-RedShell> set cs_directory /opt/cobaltstrike
+redshell > set redshell_directory /opt/redshell
+redshell > set cs_directory /opt/cobaltstrike
 ```
 
 ## General
 Note on passwords used in *exec commands: special characters in passwords may be interpreted as shell meta characters, which could cause commands to fail. To get around this, set the password option and then invoke with '$password'. Example:
 ```
-RedShell> set password Test12345
+redshell > set password Test12345
 password - was: ''
 now: 'Test12345'
-RedShell> beacon_exec cme smb 192.168.1.14 --local-auth -u administrator -p $password --shares
+redshell > beacon_exec cme smb 192.168.1.14 --local-auth -u administrator -p $password --shares
 ```
 
 RedShell includes commands for navigating the file system:
 ```
-RedShell> cd /opt/redshell/
-RedShell> pwd
+redshell > cd /opt/redshell/
+redshell > pwd
 /opt/redshell
 ```
 
 Additional commands can be run via the shell command or via the '!' shortcut:
 ```
-RedShell> shell date
+redshell > shell date
 Mon 29 Jul 2019 05:33:02 PM MDT
-RedShell> !date
+redshell > !date
 Mon 29 Jul 2019 05:33:03 PM MDT
 ```
 
 Commands are tracked and accessible via the history command:
 ```
-RedShell> history 
+redshell > history 
     1  load_config config.txt
     2  status
     3  help
